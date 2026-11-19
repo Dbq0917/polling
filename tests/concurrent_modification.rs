@@ -96,7 +96,8 @@ fn concurrent_interruption() -> io::Result<()> {
         .add(move || {
             // Register a signal handler so that the syscall is actually interrupted. A signal that
             // is ignored by default does not cause an interrupted syscall.
-            signal_hook::flag::register(signal_hook::consts::signal::SIGURG, Default::default())?;
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            signal_hook::flag::register(signal_hook::consts::signal::SIGURG, flag)?;
 
             // Signal to the other thread how to send a signal to us
             sender

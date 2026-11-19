@@ -119,7 +119,11 @@ cfg_if! {
     }
 }
 
+mod event_source;
+
 pub mod os;
+
+pub use event_source::EventSource;
 
 /// Key associated with notifications.
 const NOTIFY_KEY: usize = usize::MAX;
