@@ -119,7 +119,11 @@ cfg_if! {
     }
 }
 
+mod registry;
+
 pub mod os;
+
+use registry::Registry;
 
 /// Key associated with notifications.
 const NOTIFY_KEY: usize = usize::MAX;
@@ -432,7 +436,8 @@ impl Event {
 
 /// Waits for I/O events.
 pub struct Poller {
-    poller: sys::Poller,
+    /// Per-source interest registry on top of the platform poller.
+    registry: Registry,
     lock: Mutex<()>,
     notified: AtomicBool,
 }
@@ -450,7 +455,7 @@ impl Poller {
     /// ```
     pub fn new() -> io::Result<Poller> {
         Ok(Poller {
-            poller: sys::Poller::new()?,
+            registry: Registry::new()?,
             lock: Mutex::new(()),
             notified: AtomicBool::new(false),
         })
@@ -458,12 +463,12 @@ impl Poller {
 
     /// Tell whether or not this `Poller` supports level-triggered polling.
     pub fn supports_level(&self) -> bool {
-        self.poller.supports_level()
+        self.registry.supports_level()
     }
 
     /// Tell whether or not this `Poller` supports edge-triggered polling.
     pub fn supports_edge(&self) -> bool {
-        self.poller.supports_edge()
+        self.registry.supports_edge()
     }
 
     /// Adds a file descriptor or socket to the poller.
@@ -483,6 +488,14 @@ impl Poller {
     /// Note that interest in I/O events needs to be re-enabled using
     /// [`modify()`][`Poller::modify()`] again after an event is delivered if we're interested in
     /// the next event of the same kind.
+    ///
+    /// Calling `add` more than once for the same source does not replace the previous
+    /// registration: the readable and writable interests are tracked independently and
+    /// merged into a single underlying registration. This lets several parties register
+    /// interest in different directions of one source; revoking one direction with
+    /// [`modify()`][`Poller::modify()`] or [`delete()`][`Poller::delete()`] never removes
+    /// the other party's interest. Each delivered event reports the key of the party that
+    /// registered the direction that became ready.
     ///
     /// It is possible to register interest in the same file descriptor or socket using multiple
     /// separate [`Poller`] instances. When the event is delivered, one or more [`Poller`]s are
@@ -557,7 +570,7 @@ impl Poller {
                 "the key is not allowed to be `usize::MAX`",
             ));
         }
-        self.poller.add(source.raw(), interest, mode)
+        self.registry.add(source, interest, mode)
     }
 
     /// Modifies the interest in a file descriptor or socket.
@@ -662,7 +675,7 @@ impl Poller {
                 "the key is not allowed to be `usize::MAX`",
             ));
         }
-        self.poller.modify(source.source(), interest, mode)
+        self.registry.modify(source, interest, mode)
     }
 
     /// Removes a file descriptor or socket from the poller.
@@ -690,7 +703,7 @@ impl Poller {
     /// # std::io::Result::Ok(())
     /// ```
     pub fn delete(&self, source: impl AsSource) -> io::Result<()> {
-        self.poller.delete(source.source())
+        self.registry.delete(source)
     }
 
     /// Waits for at least one I/O event and returns the number of new events.
@@ -755,7 +768,7 @@ impl Poller {
         if let Ok(_lock) = self.lock.try_lock() {
             loop {
                 // Wait for I/O events.
-                if let Err(e) = self.poller.wait_deadline(&mut events.events, deadline) {
+                if let Err(e) = self.registry.wait_deadline(&mut events.events, deadline) {
                     // If the wait was interrupted by a signal, clear events and try again.
                     if e.kind() == io::ErrorKind::Interrupted {
                         events.clear();
@@ -811,7 +824,7 @@ impl Poller {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            self.poller.notify()?;
+            self.registry.notify()?;
         }
         Ok(())
     }
@@ -819,7 +832,7 @@ impl Poller {
 
 /// A container for I/O events.
 pub struct Events {
-    events: sys::Events,
+    events: Vec<Event>,
 
     /// This is intended to be used from &mut, thread locally, so we should make it !Sync
     /// for consistency with the rest of the API.
@@ -871,7 +884,7 @@ impl Events {
     #[inline]
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
         Self {
-            events: sys::Events::with_capacity(capacity.get()),
+            events: Vec::with_capacity(capacity.get()),
             _not_sync: PhantomData,
         }
     }
@@ -896,7 +909,10 @@ impl Events {
     /// ```
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = Event> + '_ {
-        self.events.iter().filter(|ev| ev.key != NOTIFY_KEY)
+        self.events
+            .iter()
+            .copied()
+            .filter(|ev| ev.key != NOTIFY_KEY)
     }
 
     /// Delete all of the events in the container.
@@ -1012,13 +1028,13 @@ mod raw_fd_impl {
 
     impl AsRawFd for Poller {
         fn as_raw_fd(&self) -> RawFd {
-            self.poller.as_raw_fd()
+            self.registry.as_raw_fd()
         }
     }
 
     impl AsFd for Poller {
         fn as_fd(&self) -> BorrowedFd<'_> {
-            self.poller.as_fd()
+            unsafe { BorrowedFd::borrow_raw(self.registry.as_raw_fd()) }
         }
     }
 }
@@ -1031,20 +1047,20 @@ mod raw_handle_impl {
 
     impl AsRawHandle for Poller {
         fn as_raw_handle(&self) -> RawHandle {
-            self.poller.as_raw_handle()
+            self.registry.as_raw_handle()
         }
     }
 
     impl AsHandle for Poller {
         fn as_handle(&self) -> BorrowedHandle<'_> {
-            self.poller.as_handle()
+            unsafe { BorrowedHandle::borrow_raw(self.registry.as_raw_handle()) }
         }
     }
 }
 
 impl fmt::Debug for Poller {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.poller.fmt(f)
+        f.debug_struct("Poller").finish_non_exhaustive()
     }
 }
 

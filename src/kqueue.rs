@@ -362,6 +362,7 @@ impl Events {
     }
 
     /// Get the capacity of the list.
+    #[allow(dead_code)]
     pub fn capacity(&self) -> usize {
         self.list.capacity()
     }

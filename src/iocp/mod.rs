@@ -651,6 +651,7 @@ impl Events {
     }
 
     /// The capacity of the list of events.
+    #[allow(dead_code)]
     pub fn capacity(&self) -> usize {
         self.packets.capacity()
     }
